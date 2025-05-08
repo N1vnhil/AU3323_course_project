@@ -37,128 +37,63 @@ class ResidualBlock(nn.Module):
 
 
 class Actor(nn.Module):
-    def __init__(self, state_dim, action_dim):
+    def __init__(self, state_dim=12, action_dim=4):
         super(Actor, self).__init__()
 
-        # Input layer with larger capacity
-        self.input_layer = nn.Sequential(
-            nn.Linear(state_dim, 1024),
-            nn.LayerNorm(1024),
-            nn.GELU(),
-            nn.Dropout(0.2)
-        )
-
-        # Deeper residual blocks
-        self.res_blocks = nn.ModuleList([
-            ResidualBlock(1024, 1024),
-            ResidualBlock(1024, 512),
-            ResidualBlock(512, 512),
-            ResidualBlock(512, 256),
-            ResidualBlock(256, 256)
-        ])
-
-        # Output layers with action scaling
-        self.output_layer = nn.Sequential(
-            nn.Linear(256, 128),
-            nn.LayerNorm(128),
-            nn.GELU(),
-            nn.Dropout(0.1),
-            nn.Linear(128, action_dim),
+        # 使用LayerNorm替代BatchNorm
+        self.net = nn.Sequential(
+            nn.Linear(state_dim, 64),
+            nn.LayerNorm(64),
+            nn.ReLU(),
+            nn.Linear(64, 32),
+            nn.LayerNorm(32),
+            nn.ReLU(),
+            nn.Linear(32, action_dim),
             nn.Tanh()
         )
 
-        # Action scaling parameters
-        self.action_scale = nn.Parameter(torch.ones(action_dim))
-        self.action_bias = nn.Parameter(torch.zeros(action_dim))
-
-        # Initialize weights
         self.apply(self._init_weights)
 
     def _init_weights(self, module):
         if isinstance(module, nn.Linear):
-            torch.nn.init.orthogonal_(module.weight, gain=np.sqrt(2))
+            nn.init.xavier_uniform_(module.weight, gain=0.01)
             if module.bias is not None:
                 module.bias.data.zero_()
 
     def forward(self, x):
-        if isinstance(x, np.ndarray):
-            x = torch.FloatTensor(x)
         if x.dim() == 1:
             x = x.unsqueeze(0)
-
-        x = self.input_layer(x)
-
-        for res_block in self.res_blocks:
-            x = res_block(x)
-
-        x = self.output_layer(x)
-
-        # Apply action scaling
-        x = x * self.action_scale + self.action_bias
-
-        if x.size(0) == 1:
-            x = x.squeeze(0)
-
-        return x
+        x = x.float()
+        return self.net(x)
 
 
 class Critic(nn.Module):
-    def __init__(self, state_dim, action_dim=None):
+    def __init__(self, state_dim=12):
         super(Critic, self).__init__()
 
-        # Larger input layer
-        self.input_layer = nn.Sequential(
-            nn.Linear(state_dim, 1024),
-            nn.LayerNorm(1024),
-            nn.GELU(),
-            nn.Dropout(0.2)
+        self.net = nn.Sequential(
+            nn.Linear(state_dim, 64),
+            nn.LayerNorm(64),
+            nn.ReLU(),
+            nn.Linear(64, 32),
+            nn.LayerNorm(32),
+            nn.ReLU(),
+            nn.Linear(32, 1)
         )
 
-        # Deeper residual blocks
-        self.res_blocks = nn.ModuleList([
-            ResidualBlock(1024, 1024),
-            ResidualBlock(1024, 1024),
-            ResidualBlock(1024, 512),
-            ResidualBlock(512, 512),
-            ResidualBlock(512, 256),
-            ResidualBlock(256, 256)
-        ])
-
-        # Value head
-        self.output_layer = nn.Sequential(
-            nn.Linear(256, 128),
-            nn.LayerNorm(128),
-            nn.GELU(),
-            nn.Dropout(0.2),
-            nn.Linear(128, 1)
-        )
-
-        # Initialize weights
         self.apply(self._init_weights)
 
     def _init_weights(self, module):
         if isinstance(module, nn.Linear):
-            torch.nn.init.orthogonal_(module.weight, gain=np.sqrt(2))
+            nn.init.xavier_uniform_(module.weight, gain=0.01)
             if module.bias is not None:
                 module.bias.data.zero_()
 
     def forward(self, state):
-        if isinstance(state, np.ndarray):
-            state = torch.FloatTensor(state)
         if state.dim() == 1:
             state = state.unsqueeze(0)
-
-        x = self.input_layer(state)
-
-        for res_block in self.res_blocks:
-            x = res_block(x)
-
-        x = self.output_layer(x)
-
-        if x.size(0) == 1:
-            x = x.squeeze(0)
-
-        return x
+        state = state.float()
+        return self.net(state)
 
 
 class RunningNormalize:
@@ -183,10 +118,13 @@ class RunningNormalize:
         self.count = 1e-4
 
     def __call__(self, x):
-        x = np.array(x)
+        x = np.array(x, dtype=np.float32)
 
+        original_shape = x.shape
         if x.ndim == 1:
             x = x.reshape(1, -1)
+        elif x.ndim > 2:
+            x = x.reshape(x.shape[0], -1)
 
         if self.training:
             batch_mean = np.mean(x, axis=0)
@@ -202,7 +140,7 @@ class RunningNormalize:
         x_normalized = (x - self.running_mean) / (np.sqrt(self.running_var) + 1e-8)
         x_clipped = np.clip(x_normalized, -self.clip, self.clip)
 
-        if x.shape[0] == 1:
+        if original_shape == x_clipped.shape[1:]:
             return x_clipped.squeeze()
         return x_clipped
 
