@@ -6,20 +6,70 @@ import numpy as np
 torch.manual_seed(53510713690200)
 
 
+class ResidualBlock(nn.Module):
+    def __init__(self, in_features, out_features):
+        super(ResidualBlock, self).__init__()
+        self.linear1 = nn.Linear(in_features, out_features)
+        self.linear2 = nn.Linear(out_features, out_features)
+        self.ln1 = nn.LayerNorm(out_features)
+        self.ln2 = nn.LayerNorm(out_features)
+        self.activation = nn.GELU()
+        self.dropout = nn.Dropout(0.2)  # 增加dropout率
+
+        # Skip connection handling
+        self.skip = nn.Linear(in_features, out_features) if in_features != out_features else nn.Identity()
+
+    def forward(self, x):
+        identity = self.skip(x)
+
+        out = self.linear1(x)
+        out = self.ln1(out)
+        out = self.activation(out)
+        out = self.dropout(out)
+
+        out = self.linear2(out)
+        out = self.ln2(out)
+        out = self.dropout(out)  # 添加额外的dropout
+
+        out += identity
+        out = self.activation(out)
+        return out
+
+
 class Actor(nn.Module):
     def __init__(self, state_dim, action_dim):
         super(Actor, self).__init__()
-        self.l1 = nn.Linear(state_dim, 256)
-        self.l2 = nn.Linear(256, 256)
-        self.l3 = nn.Linear(256, 128)
-        self.l4 = nn.Linear(128, 64)
-        self.l5 = nn.Linear(64, action_dim)
 
-        # Layer normalization for better training stability
-        self.ln1 = nn.LayerNorm(256)
-        self.ln2 = nn.LayerNorm(256)
-        self.ln3 = nn.LayerNorm(128)
-        self.ln4 = nn.LayerNorm(64)
+        # Input layer with larger capacity
+        self.input_layer = nn.Sequential(
+            nn.Linear(state_dim, 1024),
+            nn.LayerNorm(1024),
+            nn.GELU(),
+            nn.Dropout(0.2)
+        )
+
+        # Deeper residual blocks
+        self.res_blocks = nn.ModuleList([
+            ResidualBlock(1024, 1024),
+            ResidualBlock(1024, 512),
+            ResidualBlock(512, 512),
+            ResidualBlock(512, 256),
+            ResidualBlock(256, 256)
+        ])
+
+        # Output layers with action scaling
+        self.output_layer = nn.Sequential(
+            nn.Linear(256, 128),
+            nn.LayerNorm(128),
+            nn.GELU(),
+            nn.Dropout(0.1),
+            nn.Linear(128, action_dim),
+            nn.Tanh()
+        )
+
+        # Action scaling parameters
+        self.action_scale = nn.Parameter(torch.ones(action_dim))
+        self.action_bias = nn.Parameter(torch.zeros(action_dim))
 
         # Initialize weights
         self.apply(self._init_weights)
@@ -31,28 +81,57 @@ class Actor(nn.Module):
                 module.bias.data.zero_()
 
     def forward(self, x):
-        x = F.relu(self.ln1(self.l1(x)))
-        x = F.relu(self.ln2(self.l2(x)))
-        x = F.relu(self.ln3(self.l3(x)))
-        x = F.relu(self.ln4(self.l4(x)))
-        x = torch.tanh(self.l5(x))
+        if isinstance(x, np.ndarray):
+            x = torch.FloatTensor(x)
+        if x.dim() == 1:
+            x = x.unsqueeze(0)
+
+        x = self.input_layer(x)
+
+        for res_block in self.res_blocks:
+            x = res_block(x)
+
+        x = self.output_layer(x)
+
+        # Apply action scaling
+        x = x * self.action_scale + self.action_bias
+
+        if x.size(0) == 1:
+            x = x.squeeze(0)
+
         return x
 
 
 class Critic(nn.Module):
-    def __init__(self, state_dim, action_dim):  # action_dim kept for compatibility
+    def __init__(self, state_dim, action_dim=None):
         super(Critic, self).__init__()
-        self.l1 = nn.Linear(state_dim, 512)
-        self.l2 = nn.Linear(512, 384)
-        self.l3 = nn.Linear(384, 256)
-        self.l4 = nn.Linear(256, 128)
-        self.l5 = nn.Linear(128, 1)
 
-        # Layer normalization for better training stability
-        self.ln1 = nn.LayerNorm(512)
-        self.ln2 = nn.LayerNorm(384)
-        self.ln3 = nn.LayerNorm(256)
-        self.ln4 = nn.LayerNorm(128)
+        # Larger input layer
+        self.input_layer = nn.Sequential(
+            nn.Linear(state_dim, 1024),
+            nn.LayerNorm(1024),
+            nn.GELU(),
+            nn.Dropout(0.2)
+        )
+
+        # Deeper residual blocks
+        self.res_blocks = nn.ModuleList([
+            ResidualBlock(1024, 1024),
+            ResidualBlock(1024, 1024),
+            ResidualBlock(1024, 512),
+            ResidualBlock(512, 512),
+            ResidualBlock(512, 256),
+            ResidualBlock(256, 256)
+        ])
+
+        # Value head
+        self.output_layer = nn.Sequential(
+            nn.Linear(256, 128),
+            nn.LayerNorm(128),
+            nn.GELU(),
+            nn.Dropout(0.2),
+            nn.Linear(128, 1)
+        )
 
         # Initialize weights
         self.apply(self._init_weights)
@@ -64,9 +143,73 @@ class Critic(nn.Module):
                 module.bias.data.zero_()
 
     def forward(self, state):
-        x = F.relu(self.ln1(self.l1(state)))
-        x = F.relu(self.ln2(self.l2(x)))
-        x = F.relu(self.ln3(self.l3(x)))
-        x = F.relu(self.ln4(self.l4(x)))
-        x = self.l5(x)
+        if isinstance(state, np.ndarray):
+            state = torch.FloatTensor(state)
+        if state.dim() == 1:
+            state = state.unsqueeze(0)
+
+        x = self.input_layer(state)
+
+        for res_block in self.res_blocks:
+            x = res_block(x)
+
+        x = self.output_layer(x)
+
+        if x.size(0) == 1:
+            x = x.squeeze(0)
+
         return x
+
+
+class RunningNormalize:
+    def __init__(self, shape, clip=10.0):  # 增大clip范围
+        self.shape = shape
+        self.clip = clip
+        self.running_mean = np.zeros(shape)
+        self.running_var = np.ones(shape)
+        self.count = 1e-4
+        self.training = True
+        self.momentum = 0.99  # 添加动量参数
+
+    def train(self):
+        self.training = True
+
+    def eval(self):
+        self.training = False
+
+    def reset(self):
+        self.running_mean = np.zeros(self.shape)
+        self.running_var = np.ones(self.shape)
+        self.count = 1e-4
+
+    def __call__(self, x):
+        x = np.array(x)
+
+        if x.ndim == 1:
+            x = x.reshape(1, -1)
+
+        if self.training:
+            batch_mean = np.mean(x, axis=0)
+            batch_var = np.var(x, axis=0)
+            batch_count = x.shape[0]
+
+            # 使用动量更新
+            self.running_mean = self.momentum * self.running_mean + (1 - self.momentum) * batch_mean
+            self.running_var = self.momentum * self.running_var + (1 - self.momentum) * batch_var
+            self.count += batch_count
+
+        # 标准化
+        x_normalized = (x - self.running_mean) / (np.sqrt(self.running_var) + 1e-8)
+        x_clipped = np.clip(x_normalized, -self.clip, self.clip)
+
+        if x.shape[0] == 1:
+            return x_clipped.squeeze()
+        return x_clipped
+
+    @property
+    def mean(self):
+        return self.running_mean
+
+    @property
+    def var(self):
+        return self.running_var

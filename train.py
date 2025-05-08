@@ -1,4 +1,5 @@
-from Agent import DDPGAgent, PPOAgent
+from collections import deque
+from Agent import PPOAgent
 from env import DroneEnv
 import numpy as np
 from tensorboardX import SummaryWriter
@@ -8,203 +9,268 @@ import logging
 from datetime import datetime
 import os
 
-# Create logs directory if it doesn't exist
-if not os.path.exists('logs'):
-    os.makedirs('logs')
 
-# Set up logging configuration
-current_time = datetime.now().strftime('%Y%m%d_%H%M%S')
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s [%(levelname)s] %(message)s',
-    handlers=[
-        logging.FileHandler(f'logs/training_{current_time}.log'),
-        logging.StreamHandler()
-    ]
-)
-logger = logging.getLogger(__name__)
+def process_batch(trajectory_batch, config):
+    """处理轨迹批次数据"""
+    states = np.array([t['state'] for t in trajectory_batch])
+    actions = np.array([t['action'] for t in trajectory_batch])
+    rewards = np.array([t['reward'] for t in trajectory_batch]).reshape(-1, 1)
+    next_states = np.array([t['next_state'] for t in trajectory_batch])
+    dones = np.array([t['done'] for t in trajectory_batch]).reshape(-1, 1)
+    log_probs = np.array([t['log_prob'] for t in trajectory_batch])
 
-# Set up device configuration
-if torch.cuda.is_available():
-    num_gpus = torch.cuda.device_count()
-    device = torch.device("cuda")
-    logger.info(f"Using {num_gpus} GPUs")
-    for i in range(num_gpus):
-        logger.info(f"GPU {i}: {torch.cuda.get_device_name(i)}")
-else:
-    device = torch.device("cpu")
-    logger.info("Using CPU")
+    # 确保数据类型正确
+    states = states.astype(np.float32)
+    actions = actions.astype(np.float32)
+    rewards = rewards.astype(np.float32)
+    next_states = next_states.astype(np.float32)
+    dones = dones.astype(np.float32)
+    log_probs = log_probs.astype(np.float32)
 
-torch.manual_seed(53510713690200)
-writer = SummaryWriter(f'runs/training_{current_time}')
-env = DroneEnv()
-env.reset()
-STATE_DIM = env.observation_space.shape[0]
-ACTION_DIM = env.action_space.shape[0]
+    return states, actions, rewards, next_states, dones, log_probs
 
-# PPO Hyperparameters
-# PPO Hyperparameters
-GAMMA = 0.99
-ACTOR_LR = 1e-4  # Reduced from 3e-4
-CRITIC_LR = 3e-4  # Reduced from 1e-3
-EPSILON = 0.1  # Reduced from 0.2
-EPOCHS = 5  # Reduced from 10
-MAX_EPISODE = 20000
-T = 700
-LOG_INTERVAL = 100
 
-# Log hyperparameters
-logger.info("Training Configuration:")
-logger.info(f"State Dimension: {STATE_DIM}")
-logger.info(f"Action Dimension: {ACTION_DIM}")
-logger.info(f"Gamma: {GAMMA}")
-logger.info(f"Actor Learning Rate: {ACTOR_LR}")
-logger.info(f"Critic Learning Rate: {CRITIC_LR}")
-logger.info(f"PPO Epsilon: {EPSILON}")
-logger.info(f"PPO Epochs: {EPOCHS}")
-logger.info(f"Max Episodes: {MAX_EPISODE}")
-logger.info(f"Max Steps per Episode: {T}")
-logger.info("------------------------")
+def evaluate_policy(env, agent, n_episodes=5):
+    """评估当前策略"""
+    agent.eval()  # 设置为评估模式
+    eval_rewards = []
 
-# Initialize agent and move to device
-agent = PPOAgent(STATE_DIM, ACTION_DIM, ACTOR_LR, CRITIC_LR, GAMMA, EPSILON, EPOCHS)
-# agent.load("./checkpoints/ppo_actor_2025-05-07 08:17:17.098576.pth",
-#            "./checkpoints/ppo_critic_2025-05-07 08:17:17.099961.pth")
-
-if torch.cuda.device_count() > 1:
-    agent.actor = torch.nn.DataParallel(agent.actor)
-    agent.critic = torch.nn.DataParallel(agent.critic)
-agent.actor.to(device)
-agent.critic.to(device)
-
-max_score = -np.inf
-
-# Initialize statistics tracking
-stats_window_size = 100
-episode_scores = []
-episode_lengths = []
-critic_losses = []
-actor_losses = []
-
-try:
-    for i in tqdm(range(MAX_EPISODE)):
-        score = 0
+    for _ in range(n_episodes):
         state = env.reset()
-        episode_steps = 0
+        episode_reward = 0
+        done = False
 
-        states = []
-        actions = []
-        rewards = []
-        next_states = []
-        dones = []
-        log_probs = []
+        while not done:
+            action, _ = agent.get_action(state)
+            next_state, reward, done, _ = env.step(action)
+            episode_reward += reward
+            state = next_state
 
-        # Collect trajectory
-        for j in range(T):
-            try:
-                action, log_prob = agent.get_action(state)
-                next_state, reward, done, _ = env.step(action)
-                episode_steps += 1
+        eval_rewards.append(episode_reward)
 
-                states.append(state)
-                actions.append(action)
-                rewards.append(reward)
-                next_states.append(next_state)
-                dones.append(done)
-                log_probs.append(log_prob)
+    agent.train()  # 恢复训练模式
+    return np.mean(eval_rewards), np.std(eval_rewards)
 
-                score += reward
-                state = next_state
 
-                if done:
+def train():
+    # Setup directories
+    base_dir = f'results/{datetime.now().strftime("%Y%m%d_%H%M%S")}'
+    for dir_name in ['logs', 'models', 'tensorboard', 'checkpoints']:
+        os.makedirs(f'{base_dir}/{dir_name}', exist_ok=True)
+
+    # Logging setup
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s [%(levelname)s] %(message)s',
+        handlers=[
+            logging.FileHandler(f'{base_dir}/logs/training.log'),
+            logging.StreamHandler()
+        ]
+    )
+    logger = logging.getLogger(__name__)
+
+    # Seeds for reproducibility
+    torch.manual_seed(53510713690200)
+
+    # Device setup
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if torch.cuda.is_available():
+        logger.info(f"Using {torch.cuda.device_count()} GPUs")
+        for i in range(torch.cuda.device_count()):
+            logger.info(f"GPU {i}: {torch.cuda.get_device_name(i)}")
+    else:
+        logger.info("Using CPU")
+
+    # Initialize environment and agent
+    env = DroneEnv()
+    writer = SummaryWriter(f'{base_dir}/tensorboard')
+
+    # Hyperparameters
+    config = {
+        'state_dim': env.observation_space.shape[0],
+        'action_dim': env.action_space.shape[0],
+        'gamma': 0.995,
+        'actor_lr': 1e-4,
+        'critic_lr': 5e-4,  # 修改
+        'epsilon': 0.2,
+        'epochs': 10,
+        'max_episodes': 20000,
+        'steps_per_episode': 700,
+        'gae_lambda': 0.98,
+        'entropy_coef': 0.01,
+        'value_clip': 0.2,
+        'max_grad_norm': 1.0,  # 修改
+        'batch_size': 512,  # 修改
+        'eval_freq': 500,
+        'save_freq': 100,
+        'checkpoint_freq': 1000
+    }
+
+    # Log configuration
+    logger.info("Training Configuration:")
+    for key, value in config.items():
+        logger.info(f"{key}: {value}")
+    logger.info("------------------------")
+
+    # Initialize agent
+    agent = PPOAgent(
+        state_dim=config['state_dim'],
+        action_dim=config['action_dim'],
+        actor_lr=config['actor_lr'],
+        critic_lr=config['critic_lr'],
+        gamma=config['gamma'],
+        epsilon=config['epsilon'],
+        epochs=config['epochs'],
+        gae_lambda=config['gae_lambda'],
+        entropy_coef=config['entropy_coef'],
+        value_clip=config['value_clip'],
+        max_grad_norm=config['max_grad_norm']
+    )
+
+    if torch.cuda.device_count() > 1:
+        agent.actor = torch.nn.DataParallel(agent.actor)
+        agent.critic = torch.nn.DataParallel(agent.critic)
+    agent.actor.to(device)
+    agent.critic.to(device)
+
+    # Training statistics
+    stats = {
+        'max_score': -np.inf,
+        'episode_scores': [],
+        'episode_lengths': [],
+        'critic_losses': [],
+        'actor_losses': [],
+        'avg_rewards': deque(maxlen=100),
+        'best_avg_reward': -np.inf,
+        'training_steps': 0
+    }
+
+    try:
+        agent.train()  # 确保在训练模式开始
+        for episode in tqdm(range(config['max_episodes'])):
+            trajectory_batch = []
+            state = env.reset()
+            episode_reward = 0
+            episode_steps = 0
+
+            # Collect trajectory
+            for step in range(config['steps_per_episode']):
+                try:
+                    # Get action
+                    action, log_prob = agent.get_action(state)
+                    stats['training_steps'] += 1
+
+                    # Take step in environment
+                    next_state, reward, done, _ = env.step(action)
+
+                    # Store transition
+                    trajectory_batch.append({
+                        'state': state,
+                        'action': action,
+                        'reward': reward,
+                        'next_state': next_state,
+                        'done': done,
+                        'log_prob': log_prob
+                    })
+
+                    episode_reward += reward
+                    episode_steps += 1
+                    state = next_state
+
+                    if done:
+                        break
+
+                except Exception as e:
+                    logger.error(f"Error in step {step}: {str(e)}", exc_info=True)
                     break
 
-            except Exception as e:
-                logger.error(f"Error in step {j} of episode {i}: {str(e)}", exc_info=True)
-                break
+            # Process batch and update policy
+            if len(trajectory_batch) > 0:
+                try:
+                    states, actions, rewards, next_states, dones, log_probs = process_batch(trajectory_batch, config)
 
-        if len(states) == 0:
-            logger.warning(f"Episode {i} collected no transitions, skipping update")
-            continue
+                    # Update policy
+                    critic_loss, actor_loss = agent.update(
+                        states, actions, rewards, next_states, dones, log_probs
+                    )
 
-        # Convert lists to numpy arrays
-        states = np.array(states)
-        actions = np.array(actions)
-        rewards = np.array(rewards).reshape(-1, 1)
-        next_states = np.array(next_states)
-        dones = np.array(dones).reshape(-1, 1)
-        log_probs = np.array(log_probs)
+                    # Update statistics
+                    stats['episode_scores'].append(episode_reward)
+                    stats['episode_lengths'].append(episode_steps)
+                    stats['critic_losses'].append(critic_loss)
+                    stats['actor_losses'].append(actor_loss)
+                    stats['avg_rewards'].append(episode_reward)
 
-        # Update policy
-        try:
-            critic_loss, actor_loss = agent.update(
-                states, actions, rewards, next_states, dones, log_probs
-            )
+                    # Logging
+                    writer.add_scalar('loss/critic', critic_loss, stats['training_steps'])
+                    writer.add_scalar('loss/actor', actor_loss, stats['training_steps'])
+                    writer.add_scalar('metrics/score', episode_reward, stats['training_steps'])
+                    writer.add_scalar('metrics/episode_length', episode_steps, stats['training_steps'])
 
-            # Store statistics
-            episode_scores.append(score)
-            episode_lengths.append(episode_steps)
-            critic_losses.append(critic_loss)
-            actor_losses.append(actor_loss)
+                    # Periodic evaluation
+                    if (episode + 1) % config['eval_freq'] == 0:
+                        eval_mean, eval_std = evaluate_policy(env, agent)
+                        writer.add_scalar('eval/mean_reward', eval_mean, stats['training_steps'])
+                        writer.add_scalar('eval/reward_std', eval_std, stats['training_steps'])
 
-            # Log to tensorboard
-            writer.add_scalar('loss/critic', critic_loss, i)
-            writer.add_scalar('loss/actor', actor_loss, i)
-            writer.add_scalar('metrics/score', score, i)
-            writer.add_scalar('metrics/episode_length', episode_steps, i)
+                        logger.info(
+                            f"\nEpisode {episode + 1}\n"
+                            f"Training Steps: {stats['training_steps']}\n"
+                            f"Average Training Reward (last 100): {np.mean(list(stats['avg_rewards'])):.2f}\n"
+                            f"Evaluation Reward: {eval_mean:.2f} ± {eval_std:.2f}\n"
+                            f"Episode Length: {episode_steps}\n"
+                            f"Actor Loss: {actor_loss:.4f}\n"
+                            f"Critic Loss: {critic_loss:.4f}\n"
+                            f"Best Average Reward: {stats['best_avg_reward']:.2f}"
+                        )
 
-        except Exception as e:
-            logger.error(f"Error in update step of episode {i}: {str(e)}", exc_info=True)
-            continue
+                    # Update best score and save model
+                    current_avg_reward = np.mean(list(stats['avg_rewards']))
+                    if current_avg_reward > stats['best_avg_reward']:
+                        stats['best_avg_reward'] = current_avg_reward
+                        agent.save(f'{base_dir}/models/best_model')
+                        logger.info(f"New best average reward: {current_avg_reward:.2f}")
 
-        # Log to console and file every LOG_INTERVAL episodes
-        if (i + 1) % LOG_INTERVAL == 0:
-            recent_scores = episode_scores[-min(stats_window_size, len(episode_scores)):]
-            recent_lengths = episode_lengths[-min(stats_window_size, len(episode_lengths)):]
-            recent_critic_losses = critic_losses[-min(stats_window_size, len(critic_losses)):]
-            recent_actor_losses = actor_losses[-min(stats_window_size, len(actor_losses)):]
+                    # Periodic checkpoints
+                    if (episode + 1) % config['checkpoint_freq'] == 0:
+                        agent.save(f'{base_dir}/checkpoints/checkpoint_{episode + 1}')
 
-            avg_score = np.mean(recent_scores)
-            avg_length = np.mean(recent_lengths)
-            avg_critic_loss = np.mean(recent_critic_losses)
-            avg_actor_loss = np.mean(recent_actor_losses)
+                    # Early stopping
+                    if current_avg_reward >= 200:
+                        logger.info(f"Environment solved in {episode + 1} episodes!")
+                        agent.save(f'{base_dir}/models/final_model')
+                        break
 
-            logger.info(f"\nEpisode {i + 1}/{MAX_EPISODE}")
-            logger.info(f"Last {len(recent_scores)} episodes statistics:")
-            logger.info(f"Average Score: {avg_score:.2f}")
-            logger.info(f"Average Episode Length: {avg_length:.2f}")
-            logger.info(f"Average Critic Loss: {avg_critic_loss:.4f}")
-            logger.info(f"Average Actor Loss: {avg_actor_loss:.4f}")
-            logger.info(f"Best Score So Far: {max_score:.2f}")
-            logger.info("------------------------")
+                except Exception as e:
+                    logger.error(f"Error in update step: {str(e)}", exc_info=True)
+                    continue
 
-        # Save best model
-        if score > max_score:
-            agent.save()
-            max_score = score
-            logger.info(f"New best score: {max_score:.2f}")
+            # Cleanup
+            if (episode + 1) % 100 == 0:
+                torch.cuda.empty_cache()
 
-        # Early stopping
-        if score > 200:
-            logger.info(f"Environment solved in {i + 1} episodes!")
-            break
+    except KeyboardInterrupt:
+        logger.warning(f"Training interrupted at episode {episode + 1}")
+    except Exception as e:
+        logger.error(f"Unexpected error occurred: {str(e)}", exc_info=True)
+    finally:
+        # Save final state
+        if len(stats['episode_scores']) > 0:
+            final_path = f'{base_dir}/models/final_model'
+            agent.save(final_path)
 
-except KeyboardInterrupt:
-    logger.warning(f"Training interrupted at episode {i + 1}")
-except Exception as e:
-    logger.error(f"Unexpected error occurred: {str(e)}", exc_info=True)
-finally:
-    # Log final statistics
-    if len(episode_scores) > 0:
-        logger.info("\nTraining Summary:")
-        logger.info(f"Total Episodes: {i + 1}")
-        logger.info(f"Best Score: {max_score:.2f}")
-        recent_scores = episode_scores[-min(stats_window_size, len(episode_scores)):]
-        recent_lengths = episode_lengths[-min(stats_window_size, len(episode_lengths)):]
-        logger.info(f"Final Average Score ({len(recent_scores)} episodes): {np.mean(recent_scores):.2f}")
-        logger.info(f"Final Average Episode Length: {np.mean(recent_lengths):.2f}")
-    else:
-        logger.error("No episodes completed successfully")
+            logger.info("\nTraining Summary:")
+            logger.info(f"Total Episodes: {episode + 1}")
+            logger.info(f"Total Steps: {stats['training_steps']}")
+            logger.info(f"Best Average Reward: {stats['best_avg_reward']:.2f}")
+            logger.info(f"Final Average Reward (100 episodes): {np.mean(list(stats['avg_rewards'])):.2f}")
+            logger.info(f"Model saved to {final_path}")
+        else:
+            logger.error("No episodes completed successfully")
 
-    env.close()
-    writer.close()
+        env.close()
+        writer.close()
+
+
+if __name__ == "__main__":
+    train()
