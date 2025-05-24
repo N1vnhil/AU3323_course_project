@@ -9,9 +9,14 @@ class Actor(nn.Module):
     def __init__(self, state_dim=12, action_dim=4):
         super(Actor, self).__init__()
         self.net = nn.Sequential(
-            nn.Linear(state_dim, 256),
+            nn.Linear(state_dim, 512),
+            nn.LayerNorm(512),
+            nn.ReLU(),
+            nn.Dropout(0.1),
+            nn.Linear(512, 256),
             nn.LayerNorm(256),
             nn.ReLU(),
+            nn.Dropout(0.1),
             nn.Linear(256, 128),
             nn.LayerNorm(128),
             nn.ReLU(),
@@ -39,9 +44,14 @@ class Critic(nn.Module):
     def __init__(self, state_dim=12):
         super(Critic, self).__init__()
         self.net = nn.Sequential(
-            nn.Linear(state_dim, 256),
+            nn.Linear(state_dim, 512),
+            nn.LayerNorm(512),
+            nn.ReLU(),
+            nn.Dropout(0.1),
+            nn.Linear(512, 256),
             nn.LayerNorm(256),
             nn.ReLU(),
+            nn.Dropout(0.1),
             nn.Linear(256, 128),
             nn.LayerNorm(128),
             nn.ReLU(),
