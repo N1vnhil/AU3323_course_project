@@ -30,7 +30,7 @@ class DroneEnv(gym.Env):
             (np.array([-15, -15, 0]), np.array([-10, -10, 10]))
         ]
         self.time_step = 0
-        self.max_time_steps = 1000
+        self.max_time_steps = 2000
 
     def step(self, action):
         # 解析动作
@@ -41,10 +41,7 @@ class DroneEnv(gym.Env):
         yaw = yaw * np.pi/4
 
         # 模拟风的影响
-        wind_force = self.wind_speed * 0.1  # 简单模拟风的作用力
-
-        # 更新无人机状态
-        # 动力学模型
+        wind_force = self.wind_speed * 0.1
         rotation_matrix = np.array([
             [np.cos(yaw) * np.cos(pitch), np.cos(yaw) * np.sin(pitch) * np.sin(roll) - np.sin(yaw) * np.cos(roll), np.cos(yaw) * np.sin(pitch) * np.cos(roll) + np.sin(yaw) * np.sin(roll)],
             [np.sin(yaw) * np.cos(pitch), np.sin(yaw) * np.sin(pitch) * np.sin(roll) + np.cos(yaw) * np.cos(roll), np.sin(yaw) * np.sin(pitch) * np.cos(roll) - np.cos(yaw) * np.sin(roll)],
@@ -54,27 +51,58 @@ class DroneEnv(gym.Env):
         acceleration = np.dot(rotation_matrix, thrust_vector) + wind_force
         self.drone_vel += acceleration * 0.1
         self.drone_pos += self.drone_vel * 0.1
-        
 
-        # 计算奖励
+        # 计算各种距离和速度
         distance_to_target = np.linalg.norm(self.drone_pos - self.target_pos)
-        reward = 1 - 0.4*distance_to_target
+        velocity = np.linalg.norm(self.drone_vel)
+        
+        # 计算到目标的方向向量
+        direction_to_target = self.target_pos - self.drone_pos
+        direction_to_target = direction_to_target / (np.linalg.norm(direction_to_target) + 1e-8)
+        
+        # 计算速度在目标方向上的投影
+        velocity_projection = np.dot(self.drone_vel, direction_to_target)
+        
+        # 计算姿态角
+        attitude_angles = np.array([pitch, roll, yaw])
+        attitude_penalty = np.linalg.norm(attitude_angles) * 0.1
 
-        done = False
-        # # 检查是否碰撞障碍物
-        # for min_pos, max_pos in self.obstacles:
-        #     if all(min_pos <= self.drone_pos) and all(self.drone_pos <= max_pos):
-        #         reward -= 2000
-        #         done = True
-        #         break
-        # else:
-        #     done = False
-
-        # 检查是否到达目标
+        # 1. 距离奖励：使用负的指数函数，使奖励更平滑
+        distance_reward = 10.0 * np.exp(-0.01 * distance_to_target)
+        
+        # 2. 速度奖励：鼓励向目标方向移动
+        velocity_reward = 5.0 * velocity_projection
+        
+        # 3. 姿态奖励：惩罚过大的姿态角
+        attitude_reward = -attitude_penalty
+        
+        # 4. 高度保持奖励：特别关注高度控制
+        height_diff = abs(self.drone_pos[2] - self.target_pos[2])
+        height_reward = 5.0 * np.exp(-0.1 * height_diff)
+        
+        # 5. 稳定性奖励：惩罚过大的速度
+        stability_reward = -0.1 * velocity
+        
+        # 6. 能量效率奖励：惩罚过大的推力
+        energy_reward = -0.1 * thrust
+        
+        # 7. 成功奖励：当接近目标时给予额外奖励
+        success_reward = 0
         if distance_to_target < 1:
-            reward += 10000
+            success_reward = 1000
             print('Success!')
-            done = True
+            done = False
+        else:
+            done = False
+
+        # 组合所有奖励
+        reward = (distance_reward + 
+                 velocity_reward + 
+                 attitude_reward + 
+                 height_reward + 
+                 stability_reward + 
+                 energy_reward + 
+                 success_reward)
 
         # 检查是否超过最大时间步
         self.time_step += 1

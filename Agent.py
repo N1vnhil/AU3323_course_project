@@ -10,7 +10,7 @@ torch.manual_seed(53510713690200)
 
 
 class PPOAgent:
-    def __init__(self, state_dim=12, action_dim=4, actor_lr=3e-4, critic_lr=3e-4):
+    def __init__(self, state_dim=12, action_dim=4):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         # Networks
@@ -19,15 +19,21 @@ class PPOAgent:
 
         # 调整超参数
         self.gamma = 0.99
-        self.epsilon = 0.1
-        self.epochs = 5
         self.gae_lambda = 0.95
-        self.entropy_coef = 0.001
+        self.epsilon = 0.2
+        self.epochs = 10
+        self.entropy_coef = 0.01
+        self.value_coef = 0.5
         self.max_grad_norm = 0.5
-
-        # 减小动作噪声
+        
+        # 学习率衰减
+        self.actor_lr = 1e-4
+        self.critic_lr = 1e-4
+        self.lr_decay = 0.999
+        
+        # 动作噪声
         self.action_std = 0.1
-        self.action_std_decay = 0.9999
+        self.action_std_decay = 0.9995
         self.min_action_std = 0.05
 
         # 优化器使用较小的学习率

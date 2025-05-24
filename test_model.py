@@ -8,22 +8,21 @@ torch.manual_seed(53510713690200)
 class Actor(nn.Module):
     def __init__(self, state_dim=12, action_dim=4):
         super(Actor, self).__init__()
-
-        # 简单的前馈网络，没有归一化层
         self.net = nn.Sequential(
-            nn.Linear(state_dim, 64),
-            nn.Tanh(),
-            nn.Linear(64, 32),
-            nn.Tanh(),
-            nn.Linear(32, action_dim),
-            nn.Tanh()  # 输出范围[-1,1]
+            nn.Linear(state_dim, 256),
+            nn.LayerNorm(256),
+            nn.ReLU(),
+            nn.Linear(256, 128),
+            nn.LayerNorm(128),
+            nn.ReLU(),
+            nn.Linear(128, action_dim),
+            nn.Tanh()
         )
-
         self.apply(self._init_weights)
 
     def _init_weights(self, module):
         if isinstance(module, nn.Linear):
-            nn.init.xavier_uniform_(module.weight, gain=0.01)
+            nn.init.xavier_normal_(module.weight, gain=0.01)
             if module.bias is not None:
                 module.bias.data.zero_()
 
@@ -39,20 +38,20 @@ class Actor(nn.Module):
 class Critic(nn.Module):
     def __init__(self, state_dim=12):
         super(Critic, self).__init__()
-
         self.net = nn.Sequential(
-            nn.Linear(state_dim, 64),
-            nn.Tanh(),
-            nn.Linear(64, 32),
-            nn.Tanh(),
-            nn.Linear(32, 1)
+            nn.Linear(state_dim, 256),
+            nn.LayerNorm(256),
+            nn.ReLU(),
+            nn.Linear(256, 128),
+            nn.LayerNorm(128),
+            nn.ReLU(),
+            nn.Linear(128, 1)
         )
-
         self.apply(self._init_weights)
 
     def _init_weights(self, module):
         if isinstance(module, nn.Linear):
-            nn.init.xavier_uniform_(module.weight, gain=0.01)
+            nn.init.orthogonal_(module.weight, gain=np.sqrt(2))
             if module.bias is not None:
                 module.bias.data.zero_()
 
@@ -74,6 +73,7 @@ class RunningNormalize:
         self.count = 1e-4
         self.training = True
         self.momentum = 0.95
+        self.eps = 1e-8  # 添加小的常数防止除零
 
     def train(self):
         self.training = True
@@ -99,14 +99,16 @@ class RunningNormalize:
             batch_var = np.var(x, axis=0)
             batch_count = x.shape[0]
 
+            # 使用更稳定的更新方式
             self.running_mean = (self.momentum * self.running_mean +
-                                 (1 - self.momentum) * batch_mean)
+                               (1 - self.momentum) * batch_mean)
             self.running_var = (self.momentum * self.running_var +
-                                (1 - self.momentum) * batch_var)
+                              (1 - self.momentum) * batch_var)
             self.count += batch_count
 
+        # 添加eps防止除零
         x_normalized = ((x - self.running_mean) /
-                        (np.sqrt(self.running_var + 1e-8)))
+                       (np.sqrt(self.running_var + self.eps)))
         x_clipped = np.clip(x_normalized, -self.clip, self.clip)
 
         if len(original_shape) == 1:

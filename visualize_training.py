@@ -74,7 +74,7 @@ def plot_training_curves(eval_episodes, eval_rewards, actor_losses, critic_losse
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10))
     
     # Plot evaluation rewards
-    ax1.plot(eval_episodes, eval_rewards, 'bo-', label='Evaluation Reward', linewidth=2, markersize=8)
+    ax1.plot(eval_episodes, eval_rewards, label='Evaluation Reward', linewidth=2, markersize=8)
     ax1.set_xlabel('Episode')
     ax1.set_ylabel('Reward')
     ax1.set_title('Evaluation Reward During Training')
@@ -86,7 +86,7 @@ def plot_training_curves(eval_episodes, eval_rewards, actor_losses, critic_losse
         reward_min = min(eval_rewards)
         reward_max = max(eval_rewards)
         if reward_min < 0:
-            ax1.set_ylim(reward_min * 1.1, reward_max * 0.9 if reward_max < 0 else reward_max * 1.1)
+            ax1.set_ylim(reward_min * 1.001, reward_max * 0.999 if reward_max < 0 else reward_max * 1.05)
     
     # Plot losses with twin y-axes for different scales
     ax2.plot(eval_episodes, actor_losses, 'r-', label='Actor Loss', linewidth=2)

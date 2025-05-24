@@ -7,6 +7,8 @@ import torch
 import logging
 from datetime import datetime
 import os
+import torch.nn.functional as F
+import matplotlib.pyplot as plt
 
 # 设置目录和日志
 base_dir = f'results/{datetime.now().strftime("%Y%m%d_%H%M%S")}'
@@ -131,6 +133,28 @@ def evaluate_policy(env, agent, n_episodes=5):
         agent.train()
         return -np.inf, 0
 
+def plot_training_curves(stats, base_dir):
+    plt.figure(figsize=(15, 5))
+    
+    # 奖励曲线
+    plt.subplot(1, 2, 1)
+    plt.plot(stats['eval_history'], label='Evaluation Reward')
+    plt.plot(stats['avg_rewards'], label='Training Reward')
+    plt.xlabel('Episode')
+    plt.ylabel('Reward')
+    plt.legend()
+    
+    # 损失曲线
+    plt.subplot(1, 2, 2)
+    plt.plot(stats['actor_losses'], label='Actor Loss')
+    plt.plot(stats['critic_losses'], label='Critic Loss')
+    plt.xlabel('Episode')
+    plt.ylabel('Loss')
+    plt.legend()
+    
+    plt.savefig(f'{base_dir}/training_curves.png')
+    plt.close()
+
 def train():
     # 设置随机种子和设备
     torch.manual_seed(53510713690200)
@@ -173,6 +197,9 @@ def train():
         'eval_history': [],
         'start_time': datetime.now()
     }
+
+    no_improvement_count = 0
+    no_improvement_threshold = 10  # 连续10次评估没有提升就停止
 
     try:
         for episode in range(config['max_episodes']):
@@ -266,16 +293,14 @@ def train():
                     stats['best_eval_reward'] = eval_mean
                     agent.save(f'{base_dir}/models/best_model')
                     logger.info(f"New best model saved with reward: {eval_mean:.2f}")
+                    no_improvement_count = 0
+                else:
+                    no_improvement_count += 1
+                    logger.info(f"No improvement for {no_improvement_count} evaluations")
 
             # 保存检查点
             if (episode + 1) % config['save_freq'] == 0:
                 agent.save(f'{base_dir}/models/checkpoint_{episode + 1}')
-
-            # 提前停止条件
-            if avg_reward >= 200:
-                logger.info(f"Environment solved in {episode + 1} episodes!")
-                agent.save(f'{base_dir}/models/final_model')
-                break
 
     except KeyboardInterrupt:
         logger.info("\nTraining interrupted by user")
@@ -297,6 +322,9 @@ def train():
 
         env.close()
         writer.close()
+
+        # 绘制训练曲线
+        plot_training_curves(stats, base_dir)
 
 
 if __name__ == "__main__":
