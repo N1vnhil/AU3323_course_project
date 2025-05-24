@@ -18,11 +18,11 @@ class PPOAgent:
         self.critic = Critic(state_dim).to(self.device)
 
         # 调整超参数
-        self.gamma = 0.99
-        self.gae_lambda = 0.95
-        self.epsilon = 0.2
-        self.epochs = 10
-        self.entropy_coef = 0.01
+        self.gamma = 0.99  # 保持适中的折扣因子
+        self.gae_lambda = 0.95  # 保持适中的GAE参数
+        self.epsilon = 0.2  # 保持PPO裁剪参数
+        self.epochs = 10  # 保持训练轮数
+        self.entropy_coef = 0.05  # 增加熵系数以促进探索
         self.value_coef = 0.5
         self.max_grad_norm = 0.5
         
@@ -32,7 +32,7 @@ class PPOAgent:
         self.lr_decay = 0.999
         
         # 动作噪声
-        self.action_std = 0.1
+        self.action_std = 0.2  # 增加动作噪声以促进探索
         self.action_std_decay = 0.9995
         self.min_action_std = 0.05
 
@@ -41,8 +41,8 @@ class PPOAgent:
         self.critic_opt = torch.optim.Adam(self.critic.parameters(), lr=1e-4)
 
         # Action space parameters
-        self.action_high = np.array([1.0, np.pi / 4, np.pi / 4, np.pi / 4])
-        self.action_low = np.array([0.0, -np.pi / 4, -np.pi / 4, -np.pi / 4])
+        self.action_high = np.array([1.0, np.pi/2, np.pi/2, np.pi/2])
+        self.action_low = np.array([0.0, -np.pi/2, -np.pi/2, -np.pi/2])
 
         # State normalization
         self.state_normalizer = RunningNormalize(state_dim)
@@ -75,8 +75,10 @@ class PPOAgent:
 
             # 缩放动作到环境范围
             scaled_action = np.zeros_like(action)
-            scaled_action[..., 0] = (action[..., 0] + 1.0) * 0.5  # thrust [0, 1]
-            scaled_action[..., 1:] = action[..., 1:] * (np.pi / 4)  # angles [-pi/4, pi/4]
+            # 将[-1,1]映射到[0,1]用于推力
+            scaled_action[..., 0] = (action[..., 0] + 1.0) * 0.5
+            # 将[-1,1]映射到[-pi/2,pi/2]用于角度
+            scaled_action[..., 1:] = action[..., 1:] * (np.pi / 2)
 
             # 确保动作在有效范围内
             scaled_action = np.clip(scaled_action, self.action_low, self.action_high)
@@ -117,51 +119,38 @@ class PPOAgent:
         for _ in range(self.epochs):
             # Actor更新
             action_mean = self.actor(states)
-            # 确保action_std为正数
-            action_std = torch.ones_like(action_mean).to(self.device) * max(self.action_std, 1e-6)
+            action_std = torch.ones_like(action_mean) * self.action_std
+            dist = torch.distributions.Normal(action_mean, action_std)
+            curr_log_probs = dist.log_prob(actions).sum(-1)
+            entropy = dist.entropy().mean()
 
-            try:
-                dist = torch.distributions.Normal(action_mean, action_std)
-                curr_log_probs = dist.log_prob(actions).sum(-1)
-                entropy = dist.entropy().mean()
+            ratio = torch.exp(curr_log_probs - old_log_probs)
+            ratio = torch.clamp(ratio, 1e-10, 10.0)
 
-                ratio = torch.exp(curr_log_probs - old_log_probs.sum(-1))
-                # 裁剪ratio以防止数值不稳定
-                ratio = torch.clamp(ratio, 1e-10, 10.0)
+            surr1 = ratio * advantages
+            surr2 = torch.clamp(ratio, 1 - self.epsilon, 1 + self.epsilon) * advantages
 
-                surr1 = ratio * advantages
-                surr2 = torch.clamp(ratio, 1 - self.epsilon, 1 + self.epsilon) * advantages
+            actor_loss = -(torch.min(surr1, surr2).mean() + self.entropy_coef * entropy)
 
-                actor_loss = -(torch.min(surr1, surr2).mean() + self.entropy_coef * entropy)
+            # Critic更新
+            value_pred = self.critic(states)
+            critic_loss = F.mse_loss(value_pred, returns)
 
-                # Critic更新
-                value_pred = self.critic(states)
-                critic_loss = F.mse_loss(value_pred, returns)
+            # 更新网络
+            self.actor_opt.zero_grad()
+            actor_loss.backward()
+            torch.nn.utils.clip_grad_norm_(self.actor.parameters(), self.max_grad_norm)
+            self.actor_opt.step()
 
-                # 检查损失值是否为NaN
-                if torch.isnan(actor_loss) or torch.isnan(critic_loss):
-                    print("NaN loss detected, skipping update")
-                    continue
+            self.critic_opt.zero_grad()
+            critic_loss.backward()
+            torch.nn.utils.clip_grad_norm_(self.critic.parameters(), self.max_grad_norm)
+            self.critic_opt.step()
 
-                # 更新网络
-                self.actor_opt.zero_grad()
-                actor_loss.backward()
-                # 梯度裁剪
-                torch.nn.utils.clip_grad_norm_(self.actor.parameters(), self.max_grad_norm)
-                self.actor_opt.step()
+            # 更新动作噪声
+            self.action_std = max(self.action_std * self.action_std_decay, self.min_action_std)
 
-                self.critic_opt.zero_grad()
-                critic_loss.backward()
-                torch.nn.utils.clip_grad_norm_(self.critic.parameters(), self.max_grad_norm)
-                self.critic_opt.step()
-
-            except RuntimeError as e:
-                print(f"Error during update: {e}")
-                continue
-
-            return critic_loss.item(), actor_loss.item()
-
-        return 0.0, 0.0  # 如果所有更新都失败，返回零损失
+        return critic_loss.item(), actor_loss.item()
 
     def save(self, path):
         os.makedirs(os.path.dirname(path), exist_ok=True)

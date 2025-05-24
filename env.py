@@ -12,9 +12,9 @@ import io
 class DroneEnv(gym.Env):
     def __init__(self):
         # 定义动作空间：推力、俯仰角、横滚角、偏航角
-        self.action_space = spaces.Box(low=np.array([0, -np.pi/4, -np.pi/4, -np.pi/4]),
-                                       high=np.array([1, np.pi/4, np.pi/4, np.pi/4]),
-                                       dtype=np.float32)
+        self.action_space = spaces.Box(low=np.array([0, -np.pi/2, -np.pi/2, -np.pi/2]),
+                                     high=np.array([1, np.pi/2, np.pi/2, np.pi/2]),
+                                     dtype=np.float32)
         # 定义观测空间：无人机位置、速度、目标位置、风速
         self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(12,), dtype=np.float32)
 
@@ -30,15 +30,14 @@ class DroneEnv(gym.Env):
             (np.array([-15, -15, 0]), np.array([-10, -10, 10]))
         ]
         self.time_step = 0
-        self.max_time_steps = 2000
+        self.max_time_steps = 500  # 降低最大步数
+        self.prev_vel = np.zeros(3)
+        self.prev_distance = np.inf
 
     def step(self, action):
         # 解析动作
         thrust, pitch, roll, yaw = action
-        thrust = thrust * 0.5 + 0.5
-        pitch = pitch * np.pi/4
-        roll = roll * np.pi/4
-        yaw = yaw * np.pi/4
+        # 动作已经在Agent中进行了正确的尺度变换，这里直接使用
 
         # 模拟风的影响
         wind_force = self.wind_speed * 0.1
@@ -52,62 +51,54 @@ class DroneEnv(gym.Env):
         self.drone_vel += acceleration * 0.1
         self.drone_pos += self.drone_vel * 0.1
 
-        # 计算各种距离和速度
+        # 计算距离奖励
         distance_to_target = np.linalg.norm(self.drone_pos - self.target_pos)
-        velocity = np.linalg.norm(self.drone_vel)
         
-        # 计算到目标的方向向量
-        direction_to_target = self.target_pos - self.drone_pos
-        direction_to_target = direction_to_target / (np.linalg.norm(direction_to_target) + 1e-8)
+        # 计算距离改善
+        distance_improvement = self.prev_distance - distance_to_target
         
-        # 计算速度在目标方向上的投影
-        velocity_projection = np.dot(self.drone_vel, direction_to_target)
+        # 基础距离奖励（负距离，越近奖励越大）
+        distance_reward = -1.0 * distance_to_target  # 增加权重
         
-        # 计算姿态角
-        attitude_angles = np.array([pitch, roll, yaw])
-        attitude_penalty = np.linalg.norm(attitude_angles) * 0.1
-
-        # 1. 距离奖励：使用负的指数函数，使奖励更平滑
-        distance_reward = 10.0 * np.exp(-0.01 * distance_to_target)
+        # 距离改善奖励（鼓励向目标移动）
+        improvement_reward = 20.0 * distance_improvement  # 增加权重
         
-        # 2. 速度奖励：鼓励向目标方向移动
-        velocity_reward = 5.0 * velocity_projection
+        # 远离惩罚（当距离增加时给予惩罚）
+        if distance_improvement < 0:
+            improvement_reward = 20.0 * distance_improvement  # 负的改善会变成惩罚
         
-        # 3. 姿态奖励：惩罚过大的姿态角
-        attitude_reward = -attitude_penalty
-        
-        # 4. 高度保持奖励：特别关注高度控制
-        height_diff = abs(self.drone_pos[2] - self.target_pos[2])
-        height_reward = 5.0 * np.exp(-0.1 * height_diff)
-        
-        # 5. 稳定性奖励：惩罚过大的速度
-        stability_reward = -0.1 * velocity
-        
-        # 6. 能量效率奖励：惩罚过大的推力
-        energy_reward = -0.1 * thrust
-        
-        # 7. 成功奖励：当接近目标时给予额外奖励
+        # 成功奖励
         success_reward = 0
+        done = False
         if distance_to_target < 1:
             success_reward = 1000
             print('Success!')
-            done = False
-        else:
-            done = False
+            done = True
 
-        # 组合所有奖励
-        reward = (distance_reward + 
-                 velocity_reward + 
-                 attitude_reward + 
-                 height_reward + 
-                 stability_reward + 
-                 energy_reward + 
-                 success_reward)
+        # 组合奖励
+        reward = distance_reward + improvement_reward + success_reward
 
         # 检查是否超过最大时间步
         self.time_step += 1
         if self.time_step >= self.max_time_steps:
             done = True
+            reward -= 50  # 超时惩罚
+
+        # 保存当前距离用于下次比较
+        self.prev_distance = distance_to_target
+
+        # 记录奖励构成
+        # if self.time_step % 100 == 0:  # 每100步记录一次
+        #     print(f"\n奖励函数构成 (Step {self.time_step}):")
+        #     print(f"距离奖励: {distance_reward:.2f}")
+        #     print(f"改善奖励: {improvement_reward:.2f}")
+        #     print(f"成功奖励: {success_reward:.2f}")
+        #     print(f"总奖励: {reward:.2f}")
+        #     print(f"当前距离: {distance_to_target:.2f}")
+        #     print("="*50)
+
+        # 保存当前速度用于下次计算加速度
+        self.prev_vel = self.drone_vel.copy()
 
         # 生成观测
         observation = np.concatenate([self.drone_pos, self.drone_vel, self.target_pos, self.wind_speed])
@@ -122,6 +113,8 @@ class DroneEnv(gym.Env):
         self.target_pos = np.array([-15, 30, 20])
         self.wind_speed = np.zeros(3)
         self.time_step = 0
+        self.prev_distance = np.linalg.norm(self.drone_pos - self.target_pos)
+        self.prev_vel = self.drone_vel.copy()
 
         observation = np.concatenate([self.drone_pos, self.drone_vel, self.target_pos, self.wind_speed])
         return observation
