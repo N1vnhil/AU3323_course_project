@@ -47,7 +47,8 @@ class DroneEnv(gym.Env):
             [-np.sin(pitch), np.cos(pitch) * np.sin(roll), np.cos(pitch) * np.cos(roll)]
         ])
         thrust_vector = np.array([0,0,thrust])
-        acceleration = np.dot(rotation_matrix, thrust_vector) + wind_force
+        gravity = np.array([0, 0, -9.81])  # 重力加速度
+        acceleration = np.dot(rotation_matrix, thrust_vector) + wind_force + gravity
         self.drone_vel += acceleration * 0.1
         self.drone_pos += self.drone_vel * 0.1
 

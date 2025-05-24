@@ -2,8 +2,7 @@ import torch
 import torch.nn.functional as F
 import numpy as np
 from test_model import Actor, Critic, RunningNormalize
-from collections import deque
-import random
+from torch.distributions import Normal, TransformedDistribution, TanhTransform
 import os
 
 torch.manual_seed(53510713690200)
@@ -48,95 +47,80 @@ class PPOAgent:
         self.state_normalizer = RunningNormalize(state_dim)
 
     def get_action(self, state):
-        """获取动作和对应的log概率"""
-        # 规范化状态
         state = self.state_normalizer(state)
-
-        # 转换为tensor
         if isinstance(state, np.ndarray):
             if state.ndim == 1:
                 state = state.reshape(1, -1)
             state = torch.FloatTensor(state).to(self.device)
 
         with torch.no_grad():
-            # 获取动作分布
             action_mean = self.actor(state)
             action_std = torch.ones_like(action_mean) * self.action_std
-            dist = torch.distributions.Normal(action_mean, action_std)
-
-            # 采样动作
+            base_dist = Normal(action_mean, action_std)
+            dist = TransformedDistribution(base_dist, TanhTransform())
             action = dist.sample()
-            action = torch.clamp(action, -1, 1)
             log_prob = dist.log_prob(action).sum(-1)
 
-            # 转换为numpy
             action = action.cpu().numpy()
             log_prob = log_prob.cpu().numpy()
 
-            # 缩放动作到环境范围
-            scaled_action = np.zeros_like(action)
-            # 将[-1,1]映射到[0,1]用于推力
-            scaled_action[..., 0] = (action[..., 0] + 1.0) * 0.5
-            # 将[-1,1]映射到[-pi/2,pi/2]用于角度
-            scaled_action[..., 1:] = action[..., 1:] * (np.pi / 2)
+            # 保存原始动作值用于计算log_prob
+            raw_action = action.copy()
 
-            # 确保动作在有效范围内
+            # 对动作进行缩放用于环境交互
+            scaled_action = np.zeros_like(action)
+            scaled_action[..., 0] = (action[..., 0] + 1.0) * 0.5
+            scaled_action[..., 1:] = action[..., 1:] * (np.pi / 2)
             scaled_action = np.clip(scaled_action, self.action_low, self.action_high)
 
             if scaled_action.shape[0] == 1:
                 scaled_action = scaled_action.squeeze(0)
+                raw_action = raw_action.squeeze(0)
                 log_prob = log_prob.squeeze(0)
-
-            return scaled_action, log_prob
+            return scaled_action, log_prob, raw_action
 
     def compute_gae(self, rewards, values, next_values, dones):
-        """计算广义优势估计"""
         advantages = torch.zeros_like(rewards)
         last_gae = 0
-
         for t in reversed(range(len(rewards))):
-            next_value = next_values[t] if t == len(rewards) - 1 else values[t + 1]
-            delta = rewards[t] + self.gamma * next_value * (1 - dones[t]) - values[t]
+            delta = rewards[t] + self.gamma * next_values[t] * (1 - dones[t]) - values[t]
             advantages[t] = last_gae = delta + self.gamma * self.gae_lambda * (1 - dones[t]) * last_gae
-
         returns = advantages + values
         return advantages, returns
 
-    def update(self, states, actions, rewards, next_states, dones, old_log_probs):
-        """更新策略和价值网络"""
-        # 归一化奖励
-        rewards = (rewards - rewards.mean()) / (rewards.std() + 1e-8)
+    def compute_entropy(self, dist):
+        """计算分布的熵"""
+        # 对于TransformedDistribution，我们计算基础分布的熵
+        if isinstance(dist, TransformedDistribution):
+            return dist.base_dist.entropy().mean()
+        return dist.entropy().mean()
 
-        # 计算优势和回报
+    def update(self, states, actions, rewards, next_states, dones, old_log_probs):
+        rewards = (rewards - rewards.mean()) / (rewards.std() + 1e-8)
+        rewards = torch.clamp(rewards, -10, 10)  # 限制奖励范围
+        
         with torch.no_grad():
             values = self.critic(states)
             next_values = self.critic(next_states)
             advantages, returns = self.compute_gae(rewards, values, next_values, dones)
-            # 归一化优势
             advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
-        # PPO更新
         for _ in range(self.epochs):
-            # Actor更新
             action_mean = self.actor(states)
             action_std = torch.ones_like(action_mean) * self.action_std
-            dist = torch.distributions.Normal(action_mean, action_std)
-            curr_log_probs = dist.log_prob(actions).sum(-1)
-            entropy = dist.entropy().mean()
+            base_dist = Normal(action_mean, action_std)
+            dist = TransformedDistribution(base_dist, TanhTransform())
+            curr_log_probs = dist.log_prob(actions).sum(-1)  # actions应该是[-1,1]范围内的原始动作值
+            entropy = self.compute_entropy(dist)
 
             ratio = torch.exp(curr_log_probs - old_log_probs)
-            ratio = torch.clamp(ratio, 1e-10, 10.0)
-
             surr1 = ratio * advantages
             surr2 = torch.clamp(ratio, 1 - self.epsilon, 1 + self.epsilon) * advantages
-
             actor_loss = -(torch.min(surr1, surr2).mean() + self.entropy_coef * entropy)
 
-            # Critic更新
             value_pred = self.critic(states)
             critic_loss = F.mse_loss(value_pred, returns)
 
-            # 更新网络
             self.actor_opt.zero_grad()
             actor_loss.backward()
             torch.nn.utils.clip_grad_norm_(self.actor.parameters(), self.max_grad_norm)
@@ -147,8 +131,15 @@ class PPOAgent:
             torch.nn.utils.clip_grad_norm_(self.critic.parameters(), self.max_grad_norm)
             self.critic_opt.step()
 
-            # 更新动作噪声
+            kl_div = torch.mean((curr_log_probs - old_log_probs) ** 2)
+            if kl_div > 0.02:
+                break
+
             self.action_std = max(self.action_std * self.action_std_decay, self.min_action_std)
+            for param_group in self.actor_opt.param_groups:
+                param_group['lr'] *= self.lr_decay
+            for param_group in self.critic_opt.param_groups:
+                param_group['lr'] *= self.lr_decay
 
         return critic_loss.item(), actor_loss.item()
 

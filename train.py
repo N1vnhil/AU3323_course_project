@@ -7,8 +7,6 @@ import torch
 import logging
 from datetime import datetime
 import os
-import torch.nn.functional as F
-import matplotlib.pyplot as plt
 
 # 设置目录和日志
 base_dir = f'results/{datetime.now().strftime("%Y%m%d_%H%M%S")}'
@@ -70,6 +68,10 @@ def process_batch(trajectory_batch):
     dones = torch.FloatTensor(np.array([t['done'] for t in trajectory_batch]).reshape(-1, 1)).to(device)
     log_probs = torch.FloatTensor(np.array([t['log_prob'] for t in trajectory_batch])).to(device)
 
+    # 使用更稳定的奖励归一化
+    rewards = rewards / (rewards.std() + 1e-8)
+    rewards = torch.clamp(rewards, -10, 10)  # 限制奖励范围
+
     # 添加reward统计信息
     logger.debug(f"Batch reward stats - Mean: {rewards.mean().item():.2f}, "
                 f"Min: {rewards.min().item():.2f}, Max: {rewards.max().item():.2f}")
@@ -91,10 +93,9 @@ def evaluate_policy(env, agent, n_episodes=5):
                 steps = 0
                 done = False
 
-                # 使用与训练相同的最大步数
-                while not done and steps < 700:  # 与训练时相同的步数限制
-                    normalized_state = agent.state_normalizer(state)
-                    action, _ = agent.get_action(normalized_state)
+                # 使用与训练时相同的步数限制
+                while not done and steps < env.max_time_steps:
+                    action, _, _ = agent.get_action(state)  # 更新get_action的调用
 
                     # 记录action用于调试
                     if steps == 0:
@@ -133,28 +134,6 @@ def evaluate_policy(env, agent, n_episodes=5):
         agent.train()
         return -np.inf, 0
 
-def plot_training_curves(stats, base_dir):
-    plt.figure(figsize=(15, 5))
-    
-    # 奖励曲线
-    plt.subplot(1, 2, 1)
-    plt.plot(stats['eval_history'], label='Evaluation Reward')
-    plt.plot(stats['avg_rewards'], label='Training Reward')
-    plt.xlabel('Episode')
-    plt.ylabel('Reward')
-    plt.legend()
-    
-    # 损失曲线
-    plt.subplot(1, 2, 2)
-    plt.plot(stats['actor_losses'], label='Actor Loss')
-    plt.plot(stats['critic_losses'], label='Critic Loss')
-    plt.xlabel('Episode')
-    plt.ylabel('Loss')
-    plt.legend()
-    
-    plt.savefig(f'{base_dir}/training_curves.png')
-    plt.close()
-
 def train():
     # 设置随机种子和设备
     torch.manual_seed(53510713690200)
@@ -175,7 +154,7 @@ def train():
     # 记录配置信息
     config = {
         'max_episodes': 20000,
-        'steps_per_episode': 700,
+        'steps_per_episode': env.max_time_steps,  # 使用环境的max_time_steps
         'eval_freq': 100,
         'save_freq': 1000
     }
@@ -198,9 +177,6 @@ def train():
         'start_time': datetime.now()
     }
 
-    no_improvement_count = 0
-    no_improvement_threshold = 10  # 连续10次评估没有提升就停止
-
     try:
         for episode in range(config['max_episodes']):
             trajectory_batch = []
@@ -210,12 +186,12 @@ def train():
 
             # 收集轨迹
             for step in range(config['steps_per_episode']):
-                action, log_prob = agent.get_action(state)
+                action, log_prob, raw_action = agent.get_action(state)
                 next_state, reward, done, _ = env.step(action)
 
                 trajectory_batch.append({
                     'state': state,
-                    'action': action,
+                    'action': raw_action,  # 使用原始动作值
                     'reward': reward,
                     'next_state': next_state,
                     'done': done,
@@ -293,14 +269,16 @@ def train():
                     stats['best_eval_reward'] = eval_mean
                     agent.save(f'{base_dir}/models/best_model')
                     logger.info(f"New best model saved with reward: {eval_mean:.2f}")
-                    no_improvement_count = 0
-                else:
-                    no_improvement_count += 1
-                    logger.info(f"No improvement for {no_improvement_count} evaluations")
 
             # 保存检查点
             if (episode + 1) % config['save_freq'] == 0:
                 agent.save(f'{base_dir}/models/checkpoint_{episode + 1}')
+
+            # 提前停止条件
+            if avg_reward >= 200:
+                logger.info(f"Environment solved in {episode + 1} episodes!")
+                agent.save(f'{base_dir}/models/final_model')
+                break
 
     except KeyboardInterrupt:
         logger.info("\nTraining interrupted by user")
@@ -322,9 +300,6 @@ def train():
 
         env.close()
         writer.close()
-
-        # 绘制训练曲线
-        plot_training_curves(stats, base_dir)
 
 
 if __name__ == "__main__":

@@ -1,33 +1,32 @@
-from Agent import DDPGAgent, PPOAgent
+from Agent import PPOAgent
 from env import DroneEnv
 from matplotlib import pyplot as plt
 from matplotlib import animation
 from datetime import datetime
 import numpy as np
+import os
+
+# 创建保存动画的目录
+os.makedirs('./animations', exist_ok=True)
 
 env = DroneEnv()
 env.reset()
 STATE_DIM = env.observation_space.shape[0]
 ACTION_DIM = env.action_space.shape[0]
-BUFFER_SIZE = 1000000
-BATCH_SIZE = 128
-GAMMA = 0.99
-ACTOR_LR = 1e-4
-CRITIC_LR = 1e-4
-TAU = 1e-4
-MAX_EPISODE = 3000
-T = 7000
 
-agent = PPOAgent(STATE_DIM, ACTION_DIM, ACTOR_LR, CRITIC_LR, BUFFER_SIZE, BATCH_SIZE, GAMMA)
-agent.load('checkpoints/ppo_actor_2025-05-07 09:29:44.238704.pth',
-           'checkpoints/ppo_critic_2025-05-07 09:29:44.239822.pth')
+# 初始化智能体
+agent = PPOAgent(state_dim=STATE_DIM, action_dim=ACTION_DIM)
+
+# 加载模型
+checkpoint_path = 'results/20250524_202559/models/checkpoint_9000'
+agent.load(checkpoint_path)
 
 trajectory = []
 ret = 0
 
 state = env.reset()
-for j in range(T):
-    action, _ = agent.get_action(state)
+for j in range(env.max_time_steps):  # 使用环境的max_time_steps
+    action, _, _ = agent.get_action(state)  # 更新get_action的调用
     next_state, reward, done, _ = env.step(action)
     drone_pos = next_state[:3]
     trajectory.append(drone_pos)
@@ -62,7 +61,6 @@ ax.tick_params(axis='both', which='major', labelsize=10)
 ax.grid(True, alpha=0.3)
 
 trajectory = np.array(trajectory)
-
 
 def update(frame):
     ax.cla()
@@ -111,7 +109,6 @@ def update(frame):
     ax.set_zticks(np.linspace(0, max_range_z, 11))  # 增加z轴刻度数量
 
     return ax,
-
 
 ani = animation.FuncAnimation(fig, update, frames=len(trajectory),
                               interval=50, blit=False)
