@@ -18,7 +18,7 @@ ACTION_DIM = env.action_space.shape[0]
 agent = PPOAgent(state_dim=STATE_DIM, action_dim=ACTION_DIM)
 
 # 加载模型
-checkpoint_path = 'results/20250525_013718/models/best_model'
+checkpoint_path = 'results/20250525_141226/models/best_model'
 agent.load(checkpoint_path)
 
 trajectory = []

@@ -153,7 +153,7 @@ def train():
 
     # 记录配置信息
     config = {
-        'max_episodes': 10000,
+        'max_episodes': 30000,
         'steps_per_episode': env.max_time_steps,  # 使用环境的max_time_steps
         'eval_freq': 100,
         'save_freq': 1000
@@ -275,10 +275,10 @@ def train():
                 agent.save(f'{base_dir}/models/checkpoint_{episode + 1}')
 
             # 提前停止条件
-            if avg_reward >= 200:
-                logger.info(f"Environment solved in {episode + 1} episodes!")
-                agent.save(f'{base_dir}/models/final_model')
-                break
+            # if avg_reward >= 200:
+            #     logger.info(f"Environment solved in {episode + 1} episodes!")
+            #     agent.save(f'{base_dir}/models/final_model')
+            #     break
 
     except KeyboardInterrupt:
         logger.info("\nTraining interrupted by user")

@@ -24,20 +24,16 @@ class PPOAgent:
         self.entropy_coef = 0.10
         self.value_coef = 0.5
         self.max_grad_norm = 0.5
-        
-        # 学习率衰减
-        # self.actor_lr = 1e-4
-        # self.critic_lr = 1e-4
-        self.lr_decay = 0.999
+        self.lr_decay = 0.9999
         
         # 动作噪声
-        self.action_std = 0.4  
-        self.action_std_decay = 0.9999
+        self.action_std = 0.5
+        self.action_std_decay = 0.995
         self.min_action_std = 0.1
 
         # 优化器使用较小的学习率
         self.actor_opt = torch.optim.Adam(self.actor.parameters(), lr=3e-4)
-        self.critic_opt = torch.optim.Adam(self.critic.parameters(), lr=3e-4)
+        self.critic_opt = torch.optim.Adam(self.critic.parameters(), lr=5e-4)
 
         # Action space parameters
         self.action_high = np.array([1.0, np.pi/2, np.pi/2, np.pi/2])
