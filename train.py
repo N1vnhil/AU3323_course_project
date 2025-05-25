@@ -153,7 +153,7 @@ def train():
 
     # 记录配置信息
     config = {
-        'max_episodes': 20000,
+        'max_episodes': 10000,
         'steps_per_episode': env.max_time_steps,  # 使用环境的max_time_steps
         'eval_freq': 100,
         'save_freq': 1000

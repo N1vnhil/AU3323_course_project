@@ -21,23 +21,23 @@ class PPOAgent:
         self.gae_lambda = 0.95  # 保持适中的GAE参数
         self.epsilon = 0.2  # 保持PPO裁剪参数
         self.epochs = 10  # 保持训练轮数
-        self.entropy_coef = 0.05  # 增加熵系数以促进探索
+        self.entropy_coef = 0.10
         self.value_coef = 0.5
         self.max_grad_norm = 0.5
         
         # 学习率衰减
-        self.actor_lr = 1e-4
-        self.critic_lr = 1e-4
+        # self.actor_lr = 1e-4
+        # self.critic_lr = 1e-4
         self.lr_decay = 0.999
         
         # 动作噪声
-        self.action_std = 0.2  # 增加动作噪声以促进探索
-        self.action_std_decay = 0.9995
-        self.min_action_std = 0.05
+        self.action_std = 0.4  
+        self.action_std_decay = 0.9999
+        self.min_action_std = 0.1
 
         # 优化器使用较小的学习率
-        self.actor_opt = torch.optim.Adam(self.actor.parameters(), lr=1e-4)
-        self.critic_opt = torch.optim.Adam(self.critic.parameters(), lr=1e-4)
+        self.actor_opt = torch.optim.Adam(self.actor.parameters(), lr=3e-4)
+        self.critic_opt = torch.optim.Adam(self.critic.parameters(), lr=3e-4)
 
         # Action space parameters
         self.action_high = np.array([1.0, np.pi/2, np.pi/2, np.pi/2])

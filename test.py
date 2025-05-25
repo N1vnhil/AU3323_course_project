@@ -18,15 +18,15 @@ ACTION_DIM = env.action_space.shape[0]
 agent = PPOAgent(state_dim=STATE_DIM, action_dim=ACTION_DIM)
 
 # 加载模型
-checkpoint_path = 'results/20250524_202559/models/checkpoint_9000'
+checkpoint_path = 'results/20250525_013718/models/best_model'
 agent.load(checkpoint_path)
 
 trajectory = []
 ret = 0
 
 state = env.reset()
-for j in range(env.max_time_steps):  # 使用环境的max_time_steps
-    action, _, _ = agent.get_action(state)  # 更新get_action的调用
+for j in range(env.max_time_steps): 
+    action, _, _ = agent.get_action(state) 
     next_state, reward, done, _ = env.step(action)
     drone_pos = next_state[:3]
     trajectory.append(drone_pos)

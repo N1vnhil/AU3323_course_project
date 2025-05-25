@@ -113,7 +113,7 @@ def plot_training_curves(eval_episodes, eval_rewards, actor_losses, critic_losse
     plt.close()
 
 def main():
-    log_file = 'results/20250524_202559/logs/training.log'
+    log_file = 'results/20250525_013718/logs/training.log'
     try:
         eval_episodes, eval_rewards, actor_losses, critic_losses = parse_log_file(log_file)
         print(f"Found {len(eval_episodes)} evaluation points")
