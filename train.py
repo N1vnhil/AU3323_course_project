@@ -1,6 +1,6 @@
 from collections import deque
 from Agent import PPOAgent
-from env import DroneEnv
+from real_env import DroneEnv
 import numpy as np
 from tensorboardX import SummaryWriter
 import torch
@@ -8,15 +8,14 @@ import logging
 from datetime import datetime
 import os
 
-# 设置目录和日志
 base_dir = f'results/{datetime.now().strftime("%Y%m%d_%H%M%S")}'
 os.makedirs(base_dir, exist_ok=True)
 for dir_name in ['logs', 'models', 'tensorboard']:
     os.makedirs(f'{base_dir}/{dir_name}', exist_ok=True)
 
+
 def setup_logging(base_dir):
     """设置同时输出到文件和控制台的日志记录"""
-    # 创建格式化器
     formatter = logging.Formatter('%(asctime)s [%(levelname)s] %(message)s')
 
     # 设置文件处理器
@@ -35,8 +34,6 @@ def setup_logging(base_dir):
 
     return logger
 
-logger = setup_logging(base_dir)
-writer = SummaryWriter(f'{base_dir}/tensorboard')
 
 def format_number(n):
     """格式化数字，添加千位分隔符"""
@@ -56,6 +53,10 @@ def format_time(seconds):
         return f"{int(seconds)}s"
 
 
+logger = setup_logging(base_dir)
+writer = SummaryWriter(f'{base_dir}/tensorboard')
+
+
 def process_batch(trajectory_batch):
     """处理轨迹数据"""
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -68,11 +69,10 @@ def process_batch(trajectory_batch):
     dones = torch.FloatTensor(np.array([t['done'] for t in trajectory_batch]).reshape(-1, 1)).to(device)
     log_probs = torch.FloatTensor(np.array([t['log_prob'] for t in trajectory_batch])).to(device)
 
-    # 使用更稳定的奖励归一化
+    # 奖励归一化
     rewards = rewards / (rewards.std() + 1e-8)
-    rewards = torch.clamp(rewards, -10, 10)  # 限制奖励范围
+    rewards = torch.clamp(rewards, -10, 10)
 
-    # 添加reward统计信息
     logger.debug(f"Batch reward stats - Mean: {rewards.mean().item():.2f}, "
                 f"Min: {rewards.min().item():.2f}, Max: {rewards.max().item():.2f}")
 
@@ -93,17 +93,12 @@ def evaluate_policy(env, agent, n_episodes=5):
                 steps = 0
                 done = False
 
-                # 使用与训练时相同的步数限制
                 while not done and steps < env.max_time_steps:
-                    action, _, _ = agent.get_action(state)  # 更新get_action的调用
-
-                    # 记录action用于调试
+                    action, _, _ = agent.get_action(state)
                     if steps == 0:
                         logger.debug(f"Episode {ep} first action: {action}")
 
                     next_state, reward, done, info = env.step(action)
-
-                    # 记录每一步的reward用于调试
                     if steps == 0:
                         logger.debug(f"Episode {ep} first step reward: {reward}")
 
@@ -115,12 +110,10 @@ def evaluate_policy(env, agent, n_episodes=5):
                 eval_lengths.append(steps)
 
             agent.train()
-
             mean_reward = np.mean(eval_rewards)
             std_reward = np.std(eval_rewards)
             mean_length = np.mean(eval_lengths)
 
-            # 详细的评估信息
             logger.info(f"\nEvaluation Details:")
             logger.info(f"Individual episode rewards: {eval_rewards}")
             logger.info(f"Individual episode lengths: {eval_lengths}")
@@ -133,6 +126,7 @@ def evaluate_policy(env, agent, n_episodes=5):
         logger.error(f"Error during evaluation: {str(e)}")
         agent.train()
         return -np.inf, 0
+
 
 def train():
     # 设置随机种子和设备
@@ -151,10 +145,10 @@ def train():
     agent.actor.to(device)
     agent.critic.to(device)
 
-    # 记录配置信息
+    # 配置信息
     config = {
         'max_episodes': 30000,
-        'steps_per_episode': env.max_time_steps,  # 使用环境的max_time_steps
+        'steps_per_episode': env.max_time_steps,
         'eval_freq': 100,
         'save_freq': 1000
     }
@@ -184,14 +178,13 @@ def train():
             episode_reward = 0
             episode_length = 0
 
-            # 收集轨迹
             for step in range(config['steps_per_episode']):
                 action, log_prob, raw_action = agent.get_action(state)
                 next_state, reward, done, _ = env.step(action)
 
                 trajectory_batch.append({
                     'state': state,
-                    'action': raw_action,  # 使用原始动作值
+                    'action': raw_action,
                     'reward': reward,
                     'next_state': next_state,
                     'done': done,
@@ -229,7 +222,6 @@ def train():
             writer.add_scalar('loss/critic', critic_loss, episode)
             writer.add_scalar('loss/actor', actor_loss, episode)
 
-            # 简单的进度显示
             if episode % 100 == 0:
                 elapsed_time = datetime.now() - stats['start_time']
                 elapsed_seconds = elapsed_time.total_seconds()
@@ -273,12 +265,6 @@ def train():
             # 保存检查点
             if (episode + 1) % config['save_freq'] == 0:
                 agent.save(f'{base_dir}/models/checkpoint_{episode + 1}')
-
-            # 提前停止条件
-            # if avg_reward >= 200:
-            #     logger.info(f"Environment solved in {episode + 1} episodes!")
-            #     agent.save(f'{base_dir}/models/final_model')
-            #     break
 
     except KeyboardInterrupt:
         logger.info("\nTraining interrupted by user")
