@@ -1,5 +1,5 @@
 from Agent import TD3Agent
-from env import DroneEnv  # 导入新环境
+from env_list.env3 import DroneEnv  # 导入新环境
 import numpy as np
 from tensorboardX import SummaryWriter
 from tqdm.rich import tqdm
@@ -14,13 +14,13 @@ ACTION_DIM = env.action_space.shape[0]
 BUFFER_SIZE = 1000000
 BATCH_SIZE = 512
 GAMMA = 0.99 
-ACTOR_LR = 3e-5 
+ACTOR_LR = 5e-5 
 CRITIC_LR = 1e-5 
 TAU = 5e-3
-POLICY_NOISE = 0.3
-NOISE_CLIP = 0.3 
-POLICY_FREQ = 5
-MAX_EPISODE = 500
+POLICY_NOISE = 0.4
+NOISE_CLIP = 0.25
+POLICY_FREQ = 3
+MAX_EPISODE = 800
 T = 400
 
 agent = TD3Agent(STATE_DIM, ACTION_DIM, ACTOR_LR, CRITIC_LR, BUFFER_SIZE, BATCH_SIZE, GAMMA, TAU, POLICY_NOISE, NOISE_CLIP, POLICY_FREQ)
@@ -34,7 +34,15 @@ try:
         state = env.reset()
         l1s, l2s = [], []
         for j in range(T):
-            action = agent.get_action(state, i, MAX_EPISODE)
+            action_tensor = agent.get_action(state, i, MAX_EPISODE)
+            
+            if isinstance(action_tensor, torch.Tensor):
+                action = action_tensor.detach().cpu().numpy().squeeze()
+            else:
+                action = np.asarray(action_tensor).squeeze()
+            
+            assert action.shape == (ACTION_DIM,), f"action shape expected {(ACTION_DIM,)}, got {action.shape}"
+
             next_state, reward, done, _ = env.step(action)
             l1, l2 = agent.update(state, next_state, action, reward, done, i, MAX_EPISODE)  
             score += reward
@@ -51,27 +59,9 @@ try:
         if score > max_score:
             agent.save()
             max_score = score
-        if score > 200 and np.linalg.norm(env.drone_pos - env.target_pos) < 1:
-            break
+
 except KeyboardInterrupt:
     print(f"Keyboard Terminated. Trained for {i + 1} episodes.")
 finally:
     env.close()
 
-def evaluate_agent(episodes):
-    success_count = 0
-    for _ in range(episodes):
-        state = env.reset()
-        for _ in range(T):
-            action = agent.get_action(state)
-            next_state, reward, done, _ = env.step(action)
-            if done and np.linalg.norm(env.drone_pos - env.target_pos) < 1:
-                success_count += 1
-                break
-            state = next_state
-    success_rate = success_count / episodes
-    print(f"Success rate after training: {success_rate * 100:.2f}%")
-    return success_rate
-
-# 在训练结束后运行评估函数
-evaluate_agent(MAX_EPISODE)

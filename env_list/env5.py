@@ -31,6 +31,8 @@ class DroneEnv(gym.Env):
         ]
         self.time_step = 0
         self.max_time_steps = 1000
+        self.prev_vel = np.zeros(3)
+        self.prev_distance = np.inf
 
     def step(self, action):
         # 解析动作
@@ -51,14 +53,41 @@ class DroneEnv(gym.Env):
             [-np.sin(pitch), np.cos(pitch) * np.sin(roll), np.cos(pitch) * np.cos(roll)]
         ])
         thrust_vector = np.array([0,0,thrust])
+        gravity = np.array([0, 0, -0.3])
         acceleration = np.dot(rotation_matrix, thrust_vector) + wind_force
         self.drone_vel += acceleration * 0.1
         self.drone_pos += self.drone_vel * 0.1
         
+        # 限制位置和速度
+        self.drone_pos = np.clip(self.drone_pos, -50, 50)
+        self.drone_vel = np.clip(self.drone_vel, -20, 20)
 
-        # 计算奖励
-        distance_to_target = np.linalg.norm(self.drone_pos - self.target_pos)
-        reward = 1 - 0.4*distance_to_target
+        # 计算距离奖励
+        distance_to_target = np.linalg.norm(self.drone_pos - self.target_pos) 
+        distance_reward = -np.exp(distance_to_target / 100.0)
+
+        # 计算速度方向奖励
+        direction_to_target = self.target_pos - self.drone_pos
+        direction_to_target = direction_to_target / (np.linalg.norm(direction_to_target) + 1e-8)
+        velocity_projection = np.dot(self.drone_vel, direction_to_target)
+        velocity = np.linalg.norm(self.drone_vel)
+        velocity_direction_reward = 2.0 * velocity_projection
+        
+        # 成功奖励
+        success_reward = 0
+        done = False
+        if distance_to_target < 1:
+            success_reward = 1000
+            print('Success!')
+            done = True
+        elif distance_to_target <= 2:
+            success_reward = 500
+        elif distance_to_target <= 3:
+            success_reward = 200
+        elif distance_to_target <= 5:
+            success_reward = 100
+
+        reward = distance_reward + success_reward + velocity_direction_reward
 
         done = False
         # # 检查是否碰撞障碍物
@@ -70,16 +99,17 @@ class DroneEnv(gym.Env):
         # else:
         #     done = False
 
-        # 检查是否到达目标
-        if distance_to_target < 1:
-            reward += 10000
-            print('Success!')
-            done = True
-
         # 检查是否超过最大时间步
         self.time_step += 1
         if self.time_step >= self.max_time_steps:
             done = True
+            reward -= 50  # 超时惩罚
+
+        # 保存当前距离用于下次比较
+        self.prev_distance = distance_to_target
+
+        # 保存当前速度用于下次计算加速度
+        self.prev_vel = self.drone_vel.copy()
 
         # 生成观测
         observation = np.concatenate([self.drone_pos, self.drone_vel, self.target_pos, self.wind_speed])
@@ -94,7 +124,9 @@ class DroneEnv(gym.Env):
         self.target_pos[2] = np.abs(self.target_pos[2])
         self.wind_speed = np.random.uniform(-1, 1, 3)
         self.time_step = 0
-
+        self.prev_distance = np.linalg.norm(self.drone_pos - self.target_pos)
+        self.prev_vel = self.drone_vel.copy()
+        
         observation = np.concatenate([self.drone_pos, self.drone_vel, self.target_pos, self.wind_speed])
         return observation
 

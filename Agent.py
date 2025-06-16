@@ -60,7 +60,7 @@ class TD3Agent():
         # This method returns actions the agent output during the training process 
         with torch.no_grad():
             action = self.actor(state).cpu().data.numpy()   
-            noise_scale = max(0.3 * (1 - current_episode / max_episode * 2), 0.1)  # 从0.3衰减到0.1
+            noise_scale = max(0.4* (1 - current_episode / max_episode)**0.5, 0.2)  # 从0.3衰减到0.1
             noise = np.random.normal(0, noise_scale, size=action.shape)
             action = np.clip(action + noise, -1, 1)    
         # end of your code   
@@ -79,7 +79,7 @@ class TD3Agent():
         # function you may need: self.actor.zero_grad(), self.actor_opt.step(), actor_loss.backward()
         
         # Add noise to the action
-        policy_noise_scale = max(self.policy_noise * (1 - current_episode / max_episode), 0.01) #noise decay
+        policy_noise_scale = max(self.policy_noise * (1 - current_episode / max_episode)**0.5, 0.2) #noise decay
         policy_noise = np.random.normal(0, policy_noise_scale) 
         noise = torch.randn_like(action) * torch.tensor(policy_noise).clamp(-self.noise_clip, self.noise_clip)
         next_action = (self.actor_target(next_state) + noise).clamp(-1, 1)
@@ -89,7 +89,7 @@ class TD3Agent():
         target_Q = torch.min(target_Q1, target_Q2)  
         done = done.float()
         target_Q = reward + (1-done) * self.gamma * target_Q.detach()
-        target_Q = target_Q.clamp(min=-10.0, max=10.0)  #Clip the target Q value to avoid numerical instability
+        target_Q = target_Q.clamp(min=-10.0, max=10.0)  #Clip the target Q value
         
         # Compute current Q value
         current_Q1, current_Q2 = self.critic(state, action)

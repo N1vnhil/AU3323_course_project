@@ -1,5 +1,5 @@
 from Agent import TD3Agent
-from env_list.env8 import DroneEnv
+from env import DroneEnv
 from matplotlib import pyplot as plt
 from matplotlib import animation
 
@@ -8,16 +8,17 @@ env.reset()
 STATE_DIM = env.observation_space.shape[0]
 ACTION_DIM = env.action_space.shape[0]
 BUFFER_SIZE = 1000000
-BATCH_SIZE = 128
-GAMMA = 0.99
-ACTOR_LR = 1e-4
-CRITIC_LR = 1e-4
-TAU = 1e-4
-POLICY_NOISE = 0.2 
-NOISE_CLIP = 0.5 
-POLICY_FREQ = 2 
-MAX_EPISODE = 3000
-T = 7000
+BATCH_SIZE = 512
+GAMMA = 0.99 
+ACTOR_LR = 5e-5 
+CRITIC_LR = 1e-5 
+TAU = 5e-3
+POLICY_NOISE = 0.3
+NOISE_CLIP = 0.3 
+POLICY_FREQ = 3
+MAX_EPISODE = 1000
+T = 400
+
 agent = TD3Agent(STATE_DIM, ACTION_DIM, ACTOR_LR, CRITIC_LR, BUFFER_SIZE, BATCH_SIZE, GAMMA, TAU, POLICY_NOISE, NOISE_CLIP, POLICY_FREQ)
 agent.load('checkpoints/actor.pth', 'checkpoints/critic.pth', 'checkpoints/actor_target.pth', 'checkpoints/critic_target.pth')
 
@@ -27,7 +28,7 @@ frames = []
 state = env.reset()
 for j in range(T):
     frame = env.render()
-    action = agent.get_action(state)
+    action = agent.get_action(state, j, MAX_EPISODE)
     next_state, reward, done, _ = env.step(action)
     state = next_state
     ret += reward

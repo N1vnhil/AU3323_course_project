@@ -12,94 +12,98 @@ import io
 class DroneEnv(gym.Env):
     def __init__(self):
         # 定义动作空间：推力、俯仰角、横滚角、偏航角
-        self.action_space = spaces.Box(low=np.array([0, -np.pi/4, -np.pi/4, -np.pi/4]),
-                                       high=np.array([1, np.pi/4, np.pi/4, np.pi/4]),
-                                       dtype=np.float32)
+        self.action_space = spaces.Box(low=np.array([0, -np.pi/2, -np.pi/2, -np.pi/2]),
+                                     high=np.array([1, np.pi/2, np.pi/2, np.pi/2]),
+                                     dtype=np.float32)
         # 定义观测空间：无人机位置、速度、目标位置、风速
         self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(12,), dtype=np.float32)
 
         # 初始化环境参数
         self.drone_pos = np.zeros(3)
         self.drone_vel = np.zeros(3)
-
         # 大家可以在这里自由修改目标位置
-        self.target_pos = np.array([-15, 30, 20])
+        self.target_pos = np.array([3, 3, 3])
         self.wind_speed = np.zeros(3) 
-
-        # 记录上一次的距离
-        self.last_distance = np.linalg.norm(self.drone_pos - self.target_pos)
-
         # 定义块状障碍物，每个障碍物由左下角和右上角坐标表示
         self.obstacles = [
             (np.array([15, 15, 0]), np.array([25, 25, 10])),
             (np.array([-15, -15, 0]), np.array([-10, -10, 10]))
         ]
         self.time_step = 0
-        self.max_time_steps = 1000
+        self.max_time_steps = 500  
+        self.prev_vel = np.zeros(3)
+        self.prev_distance = np.inf
 
     def step(self, action):
         # 解析动作
         thrust, pitch, roll, yaw = action
-        thrust = thrust * 0.5 + 0.5
-        pitch = pitch * np.pi/4
-        roll = roll * np.pi/4
-        yaw = yaw * np.pi/4
+        # 动作已经在Agent中进行了正确的尺度变换，这里直接使用
 
         # 模拟风的影响
-        wind_force = self.wind_speed * 0.1  # 简单模拟风的作用力
-
-        # 更新无人机状态
-        # 动力学模型
+        wind_force = self.wind_speed * 0.1
         rotation_matrix = np.array([
             [np.cos(yaw) * np.cos(pitch), np.cos(yaw) * np.sin(pitch) * np.sin(roll) - np.sin(yaw) * np.cos(roll), np.cos(yaw) * np.sin(pitch) * np.cos(roll) + np.sin(yaw) * np.sin(roll)],
             [np.sin(yaw) * np.cos(pitch), np.sin(yaw) * np.sin(pitch) * np.sin(roll) + np.cos(yaw) * np.cos(roll), np.sin(yaw) * np.sin(pitch) * np.cos(roll) - np.cos(yaw) * np.sin(roll)],
             [-np.sin(pitch), np.cos(pitch) * np.sin(roll), np.cos(pitch) * np.cos(roll)]
         ])
         thrust_vector = np.array([0,0,thrust])
-        acceleration = np.dot(rotation_matrix, thrust_vector) + wind_force
+        gravity = np.array([0, 0, -0.3])
+        acceleration = np.dot(rotation_matrix, thrust_vector) + wind_force + gravity
         self.drone_vel += acceleration * 0.1
         self.drone_pos += self.drone_vel * 0.1
+
+        # 限制位置和速度
+        self.drone_pos = np.clip(self.drone_pos, -50, 50)
+        self.drone_vel = np.clip(self.drone_vel, -20, 20)
+
+        # 计算距离奖励
+        distance_to_target = np.linalg.norm(self.drone_pos - self.target_pos) 
+        distance_reward = -np.exp(distance_to_target / 100.0)
+
+        # 计算速度方向奖励
+        direction_to_target = self.target_pos - self.drone_pos
+        direction_to_target = direction_to_target / (np.linalg.norm(direction_to_target) + 1e-8)
+        velocity_projection = np.dot(self.drone_vel, direction_to_target)
+        velocity = np.linalg.norm(self.drone_vel)
+        velocity_direction_reward = 2.0 * velocity_projection
         
-
-        # 计算奖励
-        distance_to_target = np.linalg.norm(self.drone_pos - self.target_pos)
-        
-        # 距离奖励
-        current_distance = np.linalg.norm(self.drone_pos - self.target_pos)
-        distance_change = self.last_distance - current_distance
-        distance_reward = (distance_change / (self.last_distance + 1e-6)) * 10
-        self.last_distance = current_distance
-        reward = distance_reward
-
-        # 速度奖励
-        direction_to_target = (self.target_pos - self.drone_pos) / (np.linalg.norm(self.target_pos - self.drone_pos) + 1e-6)
-        velocity_along_target = np.dot(self.drone_vel, direction_to_target)
-        velocity_reward = np.clip(velocity_along_target, 0, 3.0) * 0.05
-        reward += velocity_reward
-
+        # 成功奖励
+        success_reward = 0
         done = False
-        # # 检查是否碰撞障碍物
-        # for min_pos, max_pos in self.obstacles:
-        #     if all(min_pos <= self.drone_pos) and all(self.drone_pos <= max_pos):
-        #         reward -= 2000
-        #         done = True
-        #         break
-        # else:
-        #     done = False
-
-        # 时间惩罚
-        reward -= 0.1
-
-        # 检查是否到达目标
         if distance_to_target < 1:
-            reward += 10000
+            success_reward = 1000
             print('Success!')
             done = True
+        elif distance_to_target <= 2:
+            success_reward = 500
+        elif distance_to_target <= 3:
+            success_reward = 200
+        elif distance_to_target <= 5:
+            success_reward = 100
+
+        reward = distance_reward + success_reward + velocity_direction_reward
 
         # 检查是否超过最大时间步
         self.time_step += 1
         if self.time_step >= self.max_time_steps:
             done = True
+            reward -= 50  # 超时惩罚
+
+        # 保存当前距离用于下次比较
+        self.prev_distance = distance_to_target
+
+        # 记录奖励构成
+        # if self.time_step % 100 == 0:  # 每100步记录一次
+        #     print(f"\n奖励函数构成 (Step {self.time_step}):")
+        #     print(f"距离奖励: {distance_reward:.2f}")
+        #     print(f"速度奖励: {velocity_direction_reward:.2f}")
+        #     print(f"成功奖励: {success_reward:.2f}")
+        #     print(f"总奖励: {reward:.2f}")
+        #     print(f"当前距离: {distance_to_target:.2f}")
+        #     print("="*50)
+
+        # 保存当前速度用于下次计算加速度
+        self.prev_vel = self.drone_vel.copy()
 
         # 生成观测
         observation = np.concatenate([self.drone_pos, self.drone_vel, self.target_pos, self.wind_speed])
@@ -111,9 +115,11 @@ class DroneEnv(gym.Env):
         self.drone_pos = np.zeros(3)
         self.drone_vel = np.zeros(3)
         # 目标位置在这里也需要同步修改
-        self.target_pos = np.array([-15, 30, 20])
+        self.target_pos = np.array([3, 3, 3])
         self.wind_speed = np.zeros(3)
         self.time_step = 0
+        self.prev_distance = np.linalg.norm(self.drone_pos - self.target_pos)
+        self.prev_vel = self.drone_vel.copy()
 
         observation = np.concatenate([self.drone_pos, self.drone_vel, self.target_pos, self.wind_speed])
         return observation
